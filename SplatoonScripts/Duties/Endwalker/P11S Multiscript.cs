@@ -1,4 +1,5 @@
-﻿using Dalamud.Game.ClientState.Objects.Types;
+﻿using Dalamud.Game.ClientState.Objects.SubKinds;
+using Dalamud.Game.ClientState.Objects.Types;
 using ECommons;
 using ECommons.Configuration;
 using ECommons.DalamudServices;
@@ -33,8 +34,26 @@ namespace SplatoonScriptsOfficial.Duties.Endwalker
         enum Color { Unknown, Light, Dark };
         BattleNpc? Themis => Svc.Objects.FirstOrDefault(x => x is BattleNpc b && b.DataId == 16114 && b.IsTargetable()) as BattleNpc;
         IEnumerable<BattleNpc> IllusoryThemises => Svc.Objects.Where(x => x is BattleNpc b && b.DataId == 16115).Cast<BattleNpc>();
+        IEnumerable<BattleNpc> AllThemises
+        {
+            get
+            {
+                foreach(var x in IllusoryThemises) yield return x;
+                var t = Themis;
+                if(t != null) yield return t;
+            }
+        }
         TickScheduler? DonutScheduler;
         TickScheduler? TowerScheduler;
+        bool LogCasts = false;
+        List<TetherData> Tethers = new();
+        public class TetherData
+        {
+            public uint source;
+            public uint target;
+            public long time = Environment.TickCount64;
+            public float Age => (float)(Environment.TickCount64 - time) / 1000f;
+        }
 
         Dictionary<TowerDirection, Vector2> Towers = new()
         {
@@ -62,6 +81,37 @@ namespace SplatoonScriptsOfficial.Duties.Endwalker
 
         TowerDirection[] Clock = new TowerDirection[] { TowerDirection.North, TowerDirection.NorthEast, TowerDirection.East, TowerDirection.SouthEast, TowerDirection.South, TowerDirection.SouthWest, TowerDirection.West, TowerDirection.NorthWest };
 
+        public enum MoveDirection { Disable, Clockwise, CounterClockwise, Unused_Tower_Position, Fixed_position }
+
+        public override void OnSetup()
+        {
+            for (var i = 0; i < 8; i++)
+            {
+                Controller.RegisterElementFromCode($"PairDonut{i}", "{\"Name\":\"\",\"Enabled\":false,\"refX\":93.386154,\"refY\":89.96649,\"radius\":2.0,\"Donut\":7.0,\"color\":4290576590,\"thicc\":3.0,\"refActorPlaceholder\":[],\"FillStep\":0.25,\"refActorComparisonType\":5}");
+                Controller.RegisterElementFromCode($"LingerAOE{i}", "{\"Name\":\"\",\"Enabled\":false,\"refX\":89.57288,\"refY\":89.32873,\"refZ\":-9.536743E-07,\"radius\":5.0,\"color\":1358954495,\"Filled\":true}");
+            }
+            Controller.RegisterElementFromCode("Tower", "{\"Name\":\"\",\"Enabled\":false,\"refX\":107.98778,\"refY\":100.025696,\"radius\":1.0,\"Donut\":3.0,\"color\":4278255401,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
+            Controller.RegisterElementFromCode($"Spot{TowerDirection.North}", "{\"Name\":\"\",\"refX\":100.0,\"refY\":83.0,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
+            Controller.RegisterElementFromCode($"Spot{TowerDirection.East}", "{\"Name\":\"\",\"refX\":117.0,\"refY\":100.0,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
+            Controller.RegisterElementFromCode($"Spot{TowerDirection.West}", "{\"Name\":\"\",\"refX\":83.0,\"refY\":100.0,\"refZ\":1.9073486E-06,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
+            Controller.RegisterElementFromCode($"Spot{TowerDirection.South}", "{\"Name\":\"\",\"refX\":100.0,\"refY\":117.0,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
+            Controller.RegisterElementFromCode($"Spot{TowerDirection.SouthEast}", "{\"Name\":\"\",\"refX\":112.0,\"refY\":112.0,\"refZ\":1.9073486E-06,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
+            Controller.RegisterElementFromCode($"Spot{TowerDirection.SouthWest}", "{\"Name\":\"\",\"refX\":88.0,\"refY\":112.0,\"refZ\":1.9073486E-06,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
+            Controller.RegisterElementFromCode($"Spot{TowerDirection.NorthEast}", "{\"Name\":\"\",\"refX\":112.0,\"refY\":88.0,\"refZ\":1.9073486E-06,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
+            Controller.RegisterElementFromCode($"Spot{TowerDirection.NorthWest}", "{\"Name\":\"\",\"refX\":88.0,\"refY\":88.0,\"refZ\":1.9073486E-06,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
+        }
+
+        public override void OnTetherCreate(uint source, uint target, byte data2, byte data3, byte data5)
+        {
+            Tethers.Add(new() { source = source, target = target });
+            Tethers.RemoveAll(x => x.Age > 60f);
+        }
+
+        PlayerCharacter? GetLastTetheredPlayer(BattleNpc source)
+        {
+            return Tethers.Where(x => x.source == source.ObjectId && x.target.GetObject() is PlayerCharacter).OrderBy(x => x.Age).FirstOrDefault()?.target.GetObject() as PlayerCharacter;
+        }
+
         TowerDirection GetNextSpot(TowerDirection md, MoveDirection d)
         {
             if(d == MoveDirection.Fixed_position)
@@ -79,26 +129,6 @@ namespace SplatoonScriptsOfficial.Duties.Endwalker
             if(index < 0) index = Clock.Length - 1;
             if (index >= Clock.Length) index = 0;
             return Clock[index];
-        }
-
-        public enum MoveDirection { Disable, Clockwise, CounterClockwise, Unused_Tower_Position, Fixed_position}
-
-        public override void OnSetup()
-        {
-            for(var i = 0; i < 8; i++)
-            {
-                Controller.RegisterElementFromCode($"PairDonut{i}", "{\"Name\":\"\",\"Enabled\":false,\"refX\":93.386154,\"refY\":89.96649,\"radius\":2.0,\"Donut\":7.0,\"color\":4290576590,\"thicc\":3.0,\"refActorPlaceholder\":[],\"FillStep\":0.25,\"refActorComparisonType\":5}");
-                Controller.RegisterElementFromCode($"LingerAOE{i}", "{\"Name\":\"\",\"Enabled\":false,\"refX\":89.57288,\"refY\":89.32873,\"refZ\":-9.536743E-07,\"radius\":5.0,\"color\":1358954495,\"Filled\":true}");
-            }
-            Controller.RegisterElementFromCode("Tower", "{\"Name\":\"\",\"Enabled\":false,\"refX\":107.98778,\"refY\":100.025696,\"radius\":1.0,\"Donut\":3.0,\"color\":4278255401,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
-            Controller.RegisterElementFromCode($"Spot{TowerDirection.North}", "{\"Name\":\"\",\"refX\":100.0,\"refY\":83.0,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
-            Controller.RegisterElementFromCode($"Spot{TowerDirection.East}", "{\"Name\":\"\",\"refX\":117.0,\"refY\":100.0,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
-            Controller.RegisterElementFromCode($"Spot{TowerDirection.West}", "{\"Name\":\"\",\"refX\":83.0,\"refY\":100.0,\"refZ\":1.9073486E-06,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
-            Controller.RegisterElementFromCode($"Spot{TowerDirection.South}", "{\"Name\":\"\",\"refX\":100.0,\"refY\":117.0,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
-            Controller.RegisterElementFromCode($"Spot{TowerDirection.SouthEast}", "{\"Name\":\"\",\"refX\":112.0,\"refY\":112.0,\"refZ\":1.9073486E-06,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
-            Controller.RegisterElementFromCode($"Spot{TowerDirection.SouthWest}", "{\"Name\":\"\",\"refX\":88.0,\"refY\":112.0,\"refZ\":1.9073486E-06,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
-            Controller.RegisterElementFromCode($"Spot{TowerDirection.NorthEast}", "{\"Name\":\"\",\"refX\":112.0,\"refY\":88.0,\"refZ\":1.9073486E-06,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
-            Controller.RegisterElementFromCode($"Spot{TowerDirection.NorthWest}", "{\"Name\":\"\",\"refX\":88.0,\"refY\":88.0,\"refZ\":1.9073486E-06,\"radius\":2.0,\"color\":4294963968,\"thicc\":5.0,\"FillStep\":1.0,\"tether\":true}");
         }
 
         public override void OnMapEffect(uint position, ushort data1, ushort data2)
@@ -154,11 +184,32 @@ namespace SplatoonScriptsOfficial.Duties.Endwalker
             ResetAll();
         }
 
+        const uint ActionTetherStack = 34771;
+        const uint ActionTetherSpread = 99999;
+
+        public override void OnUpdate()
+        {
+            foreach (var t in AllThemises)
+            {
+                if (t.IsCasting)
+                {
+                    if (t.CastActionId == ActionTetherStack)
+                    {
+                        //
+                    }
+                    if(t.CastActionId == ActionTetherSpread)
+                    {
+
+                    }
+                }
+            }
+        }
+
         private void ActionEffect_ActionEffectEvent(ActionEffectSet set)
         {
             if(set.Source != null && set.Source is BattleNpc b)
             {
-                //DuoLog.Information($"{set.Action.RowId} - {set.Action.Name} ({b.Name})");
+                if(LogCasts && b.IsHostile()) DuoLog.Information($"{set.Action.RowId} - {set.Action.Name} ({b.Name})");
                 if(C.EnableProteanLinger && set.Action.RowId.EqualsAny<uint>(33257, 33256)) //protean
                 {
                     var col = GetColor(Themis);
@@ -235,6 +286,7 @@ namespace SplatoonScriptsOfficial.Duties.Endwalker
 
                 if (ImGui.CollapsingHeader("Debug"))
                 {
+                    ImGui.Checkbox($"Log casts", ref LogCasts);
                     var next1 = GetNextSpot(C.Tower1, C.MoveDirection);
                     var next2 = GetNextSpot(C.Tower2, C.MoveDirection);
                     ImGuiEx.Text($"Next: 1: {C.Tower1}->{next1}, 2: {C.Tower2}->{next2}");
@@ -247,6 +299,11 @@ namespace SplatoonScriptsOfficial.Duties.Endwalker
                     foreach (var x in IllusoryThemises)
                     {
                         ImGuiEx.Text($"{x} color: {GetColor(x)}");
+                    }
+                    ImGuiEx.Text($"Tethers");
+                    foreach (var x in Tethers)
+                    {
+                        ImGuiEx.Text($"{x.source.GetObject()}->{x.target.GetObject()}, {x.Age}s");
                     }
                 }
             }
